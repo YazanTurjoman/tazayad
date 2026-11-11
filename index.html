@@ -617,9 +617,11 @@ function boot() {
   NET.code = q;
   if (asHost) hostRoom(); else joinRoom();
 }
-function hostRoom() {
+function hostRoom(tries) {
+  tries = tries || 0;
   var p = new Peer(ROOM_PREFIX + NET.code);
   NET.peer = p;
+  p.on('disconnected', function () { try { p.reconnect(); } catch (x) {} });
   p.on('open', function () {
     lsSet('b6host', NET.code);
     isEngine = true; NET.ready = true; hostOnline = true;
@@ -636,31 +638,43 @@ function hostRoom() {
     conn.on('error', function () {});
   });
   p.on('error', function (e) {
-    if (e && e.type === 'unavailable-id') { try { p.destroy(); } catch (x) {} joinRoom(); return; }
+    if (e && e.type === 'unavailable-id') {
+      try { p.destroy(); } catch (x) {}
+      if (tries < 8) { loadFailed = 'جاري تجهيز الطاولة…'; render(); setTimeout(function () { hostRoom(tries + 1); }, 2000); }
+      else joinRoom();
+      return;
+    }
     toast('مشكلة في الاتصال');
   });
 }
 function joinRoom() {
   var p = new Peer();
   NET.peer = p;
+  p.on('disconnected', function () { try { p.reconnect(); } catch (x) {} });
+  loadFailed = 'جاري الاتصال بالطاولة…'; render();
   p.on('open', function () { NET.ready = true; connectHost(); render(); });
   p.on('error', function (e) {
-    if (e && e.type === 'peer-unavailable') { hostOnline = false; loadFailed = 'الطاولة مو موجودة أو صاحبها مو متصل الحين.'; render(); setTimeout(connectHost, 4000); return; }
+    NET.connecting = false;
+    if (e && e.type === 'peer-unavailable') { hostOnline = false; loadFailed = 'الطاولة مو موجودة أو صاحبها مو متصل الحين. نحاول مرة ثانية…'; render(); return; }
     toast('مشكلة في الاتصال');
   });
+  // keep trying until the host is online (the host may open the table after you)
+  setInterval(function () { if (!NET.conn || !NET.conn.open) connectHost(); }, 4000);
 }
 function connectHost() {
-  if (!NET.peer || NET.peer.destroyed) return;
+  if (!NET.peer || NET.peer.destroyed || NET.connecting) return;
+  if (NET.conn && NET.conn.open) return;
+  NET.connecting = true;
   var conn = NET.peer.connect(ROOM_PREFIX + NET.code, { reliable: true });
   NET.conn = conn;
   conn.on('open', function () {
-    hostOnline = true; loadFailed = '';
+    NET.connecting = false; hostOnline = true; loadFailed = '';
     conn.send({ t: 'presence', p: { key: myKey, name: myName, join: joined && !!myName } });
     render();
   });
   conn.on('data', onClientMsg);
-  conn.on('close', function () { hostOnline = false; render(); setTimeout(connectHost, 3000); });
-  conn.on('error', function () {});
+  conn.on('close', function () { NET.connecting = false; hostOnline = false; render(); });
+  conn.on('error', function () { NET.connecting = false; });
 }
 function onClientMsg(m) {
   if (!m) return;
@@ -824,7 +838,6 @@ function announceTwins() {
     var word = ANN_WORD[E.rank(c)] || '';
     if (!word) continue;
     toast(word + ' تانيه');
-    speakText(word);
   }
   annDone = n;
 }
